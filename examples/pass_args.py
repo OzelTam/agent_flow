@@ -9,6 +9,8 @@ def ask_name(context: Context[str]):
     context.append(f"user_name: {name}")
     # Use StepPass to pass name to next ("greet") step 
     return StepPass(step="greet", kwargs={"name": name})
+    # or use positional args like:
+    return StepPass(step="greet", args=(name,))
 
 def greet(context: Context[str], name: str):
     greeting = f"Hello, {name}!"
