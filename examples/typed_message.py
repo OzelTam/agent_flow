@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal
-from agent_flow import Agent, Context, AGENT_START, AGENT_END, StepPass
+from agentflowpy import Agent, Context, AGENT_START, AGENT_END, StepPass
 
 class Message(BaseModel):
     role: Literal["user", "system", "assistant"] = Field(default="user")

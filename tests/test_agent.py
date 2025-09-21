@@ -1,8 +1,8 @@
 import pytest
 import json
-from agent_flow.agent import Agent, StepPass, AGENT_START, AGENT_END, _resrore_cx_msg_types
-from agent_flow.context import Context
-from agent_flow.context_manager import ContextManager
+from agentflowpy.agent import Agent, StepPass, AGENT_START, AGENT_END, _resrore_cx_msg_types
+from agentflowpy.context import Context
+from agentflowpy.context_manager import ContextManager
 
 
 def test_agent_initializes_context_manager():

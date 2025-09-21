@@ -1,4 +1,4 @@
-from agent_flow import Agent, Context, ContextManager, AGENT_START, AGENT_END
+from agentflowpy import Agent, Context, ContextManager, AGENT_START, AGENT_END
 
 
 

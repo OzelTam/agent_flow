@@ -1,4 +1,4 @@
-from agent_flow import Agent, Context, ContextManager, StepPass, AGENT_START, AGENT_END
+from agentflowpy import Agent, Context, ContextManager, StepPass, AGENT_START, AGENT_END
 
 ctx = Context[str](id="ctx1")
 agent = Agent[str]()

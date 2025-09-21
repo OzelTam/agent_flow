@@ -1,4 +1,4 @@
-from agent_flow import Context, Agent,  StepPass, AGENT_END, AGENT_START
+from agentflowpy import Context, Agent,  StepPass, AGENT_END, AGENT_START
 
 
 agent = Agent[str]()

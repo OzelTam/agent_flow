@@ -1,6 +1,6 @@
 import pytest
-from agent_flow.context import Context
-from agent_flow.context_manager import ContextManager, ContextDict
+from agentflowpy.context import Context
+from agentflowpy.context_manager import ContextManager, ContextDict
 
 
 def test_contextdict_accepts_only_context():

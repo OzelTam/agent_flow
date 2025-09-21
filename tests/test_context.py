@@ -1,6 +1,6 @@
 import pytest
 from pydantic import BaseModel
-from agent_flow.context import Context
+from agentflowpy.context import Context
 
 
 class DummyMsg(BaseModel):

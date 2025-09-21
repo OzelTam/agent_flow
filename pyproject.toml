@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent_flow"
+name = "agentflowpy"
 version = "0.1.0"
 description = "Practial module to build AI agents with context management and step-based execution."
 readme = "README.md"
