@@ -22,3 +22,4 @@ pip install agentflowpy
 - **Typed Message :** [typed_message.py](./examples/typed_message.py) *Typed Message and Conditional flow.*
 - **Pass Arguments :** [pass_args.py](./examples/pass_args.py) *Passing additional arguments to next step.*
 - **Context Switch In Flow :** [mid_switch.py](./examples/mid_switch.py) *Switch context while in flow to effect next steps.*
+- **Serialize/Restore Contexts:** [save_load_state.py](./examples/save_load_state.py) *Serialize and Restore context_manager state*
