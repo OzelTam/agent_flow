@@ -5,7 +5,7 @@ from agentflowpy import Agent, Context, ContextManager, AGENT_START, AGENT_END
 # Create agent
 agent = Agent[str]()
 
-# Create context and context manager
+# Create context
 ctx = Context[str](id="ctx1", messages=["hello"])
 
 # Add context and switch to it
