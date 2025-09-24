@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentflowpy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Practial module to build AI agents with context management and step-based execution."
 readme = "README.md"
 requires-python = ">=3.12"

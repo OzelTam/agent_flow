@@ -9,7 +9,25 @@ def test_agent_initializes_context_manager():
     agent = Agent[str]()
     assert isinstance(agent.context_manager, ContextManager)
 
-
+def test_run_with():
+    agent = Agent[str]()
+    ctx = Context[str]()
+    agent.context_manager.switch_context(ctx)
+    def add_msg(cx:Context[str], msg:str):
+        ctx.append(msg)
+    def mock_start(cx:Context[str]):
+        return AGENT_END
+    
+    agent.register_step(mock_start, AGENT_START)
+    agent.register_step(add_msg, "add_msg")
+    
+    agent.run(entry_point="add_msg", args=("hey",))
+    assert ctx.messages == ["hey"]
+    agent.run(entry_point="add_msg", kwargs={"msg":"you"})
+    assert ctx.messages == ["hey", "you"]
+    
+    
+    
 def test_register_step_and_run_simple():
     agent = Agent[str]()
     ctx = Context[str](id="c1", messages=["start"])

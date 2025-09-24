@@ -1,5 +1,5 @@
 import logging
-from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional
+from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional, Tuple, Any
 from pydantic import BaseModel, Field, PrivateAttr
 from .context import Context
 from .context_manager import ContextManager, ContextDict
@@ -39,28 +39,46 @@ class Agent(BaseModel, Generic[MessageT]):
         self.__registered_steps[tag] = func
         logger.debug(f"Registered step '{tag}'.")
 
-    def run(self):
-        if self.context_manager is None :
+    def run(self, 
+            context:Optional[str | Context[MessageT]]=None,
+            entry_point:Optional[str]=None,
+            args:Tuple=(),
+            kwargs:Dict[str,Any] = {}
+            ):
+        """
+        Runs registered steps starting from step with AGENT_START tag, if its not available it will invoke first step.
+        If no context is passed it will default to current context.
+        """
+        if not context and self.context_manager is None :
             logger.exception("ContextManager is not set. Cannot run agent.")
             raise ValueError("ContextManager is not set.")
         
-        if self.context_manager.current_context is None:
+        if not context and self.context_manager.current_context is None:
             logger.exception("Current context is not set in ContextManager. Cannot run agent.")
             raise ValueError("Current context is not set in ContextManager.")
+        
         if len(self.__registered_steps.items()) == 0:
             logger.warning("No steps registered. Exiting run().")
             return
         
-        step_lead = AGENT_START if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.keys()))
+        step_lead:str|StepPass
+        
+        if entry_point:
+            step_lead = StepPass(entry_point, kwargs, args)
+        else:
+            step_lead = AGENT_START if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.keys()))
+        
+        
         logger.debug(f"Starting agent run at step '{step_lead}'.")
-        context = self.context_manager.contexts[self.context_manager.current_context.id]
+        context = self.context_manager.contexts[self.context_manager.current_context.id] if not context else context
+        context = self.context_manager.contexts[context] if isinstance(context, str) else context
         
         while step_lead != AGENT_END and step_lead is not None:
 
             step_func: Callable[Concatenate[Context[MessageT], P], Optional[str | StepPass]]
             kwargs = {}
             args = ()
-            
+
             if isinstance(step_lead, StepPass):
                 step_name = step_lead.step
                 if step_name not in self.__registered_steps and step_name != AGENT_START:
