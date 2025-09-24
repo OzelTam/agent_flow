@@ -1,4 +1,4 @@
-import logging
+import logging, inspect, asyncio
 from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional, Tuple, Any
 from pydantic import BaseModel, Field, PrivateAttr
 from .context import Context
@@ -116,8 +116,10 @@ class Agent(BaseModel, Generic[MessageT]):
                 logger.exception(f"Invalid step lead type: {type(step_lead)}. Stopping execution.")
                 raise TypeError(f"Step lead must be str or StepPass, got {type(step_lead)}.")
             
-            step_lead = step_func(context, *args, **kwargs)
-            
+            if inspect.iscoroutinefunction(step_func):
+                step_lead = asyncio.run(step_func(context, *args, **kwargs))
+            else:
+                step_lead = step_func(context, *args, **kwargs)
             
             if step_lead is None:
                 logger.debug("Step returned None. Ending run.")
