@@ -1,9 +1,11 @@
 import logging, inspect, asyncio
-from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional, Tuple, Any
+from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional, Tuple, Any , overload
 from pydantic import BaseModel, Field, PrivateAttr
 from .context import Context
 from .context_manager import ContextManager, ContextDict
 from dataclasses import dataclass, field
+from typing_extensions import deprecated
+import warnings
 
 
 logger = logging.getLogger(__name__)
@@ -39,45 +41,46 @@ class Agent(BaseModel, Generic[MessageT]):
         self.__registered_steps[tag] = func
         logger.debug(f"Registered step '{tag}'.")
 
-    def run(self, 
-            context:Optional[str | Context[MessageT]]=None,
-            entry_point:Optional[str]=None,
-            args:Tuple=(),
-            kwargs:Dict[str,Any] = {}
-            ):
+    async def _execute_step( self, step_func: Callable, context, *args, **kwargs):
+        """Run a step function (sync or async) and return its result."""
+        if inspect.iscoroutinefunction(step_func):
+            return await step_func(context, *args, **kwargs)
+        else:
+            return step_func(context, *args, **kwargs)
+
+    async def _run_internal( self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
         """
-        Runs registered steps starting from step with AGENT_START tag, if its not available it will invoke first step.
-        If no context is passed it will default to current context.
+        Shared logic for running steps (always async).
+        Sync wrapper can call this with asyncio.run().
         """
-        if not context and self.context_manager is None :
+
+        if not context and self.context_manager is None:
             logger.exception("ContextManager is not set. Cannot run agent.")
             raise ValueError("ContextManager is not set.")
-        
+
         if not context and self.context_manager.current_context is None:
             logger.exception("Current context is not set in ContextManager. Cannot run agent.")
             raise ValueError("Current context is not set in ContextManager.")
-        
+
         if len(self.__registered_steps.items()) == 0:
             logger.warning("No steps registered. Exiting run().")
             return
-        
-        step_lead:str|StepPass
-        
+
+        step_lead: str | StepPass
+
         if entry_point:
-            step_lead = StepPass(entry_point, kwargs, args)
+            step_lead = entry_point if isinstance(entry_point, StepPass) else StepPass(entry_point)
         else:
             step_lead = AGENT_START if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.keys()))
-        
-        
+
         logger.debug(f"Starting agent run at step '{step_lead}'.")
         context = self.context_manager.contexts[self.context_manager.current_context.id] if not context else context
         context = self.context_manager.contexts[context] if isinstance(context, str) else context
-        
-        while step_lead != AGENT_END and step_lead is not None:
 
-            step_func: Callable[Concatenate[Context[MessageT], P], Optional[str | StepPass]]
-            kwargs = {}
+        while step_lead != AGENT_END and step_lead is not None:
+            step_func: Callable
             args = ()
+            kwargs = {}
 
             if isinstance(step_lead, StepPass):
                 step_name = step_lead.step
@@ -88,24 +91,20 @@ class Agent(BaseModel, Generic[MessageT]):
                     context = self.context_manager.contexts[self.context_manager.current_context.id]
                     logger.debug(f"Context updated to id={context.id} due to StepPass.")
                 if not isinstance(step_lead.kwargs, dict):
-                    logger.exception("StepPass kwargs must be a dictionary. Stopping execution.")
                     raise TypeError("StepPass kwargs must be a dictionary.")
                 if not isinstance(step_lead.args, tuple):
-                    logger.exception("StepPass args must be a tuple. Stopping execution.")
                     raise TypeError("StepPass args must be a tuple.")
-                    
+
                 kwargs = step_lead.kwargs
                 args = step_lead.args
-                
+
                 if step_name == AGENT_START:
                     step_func = self.__registered_steps[AGENT_START] if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.values()))
                 else:
-                    
                     step_func = self.__registered_steps[step_lead.step]
                 logger.debug(f"Executing step '{step_lead.step}':'{step_func.__name__}' with StepPass.")
             elif isinstance(step_lead, str):
                 if step_lead not in self.__registered_steps and step_lead != AGENT_START:
-                    logger.exception(f"Step '{step_lead}' not registered. Stopping execution.")
                     raise ValueError(f"Step '{step_lead}' is not registered.")
                 if step_lead == AGENT_START:
                     step_func = self.__registered_steps[AGENT_START] if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.values()))
@@ -113,23 +112,53 @@ class Agent(BaseModel, Generic[MessageT]):
                     step_func = self.__registered_steps[step_lead]
                 logger.debug(f"Executing step '{step_lead}':'{step_func.__name__}'.")
             else:
-                logger.exception(f"Invalid step lead type: {type(step_lead)}. Stopping execution.")
                 raise TypeError(f"Step lead must be str or StepPass, got {type(step_lead)}.")
-            
-            if inspect.iscoroutinefunction(step_func):
-                step_lead = asyncio.run(step_func(context, *args, **kwargs))
-            else:
-                step_lead = step_func(context, *args, **kwargs)
-            
+
+            step_lead = await self._execute_step(step_func, context, *args, **kwargs)
+
             if step_lead is None:
                 logger.debug("Step returned None. Ending run.")
             elif isinstance(step_lead, StepPass):
                 logger.debug(f"Step '{step_func.__name__}' returned StepPass to '{step_lead.step}'.")         
             elif isinstance(step_lead, str):
                 logger.debug(f"Step '{step_func.__name__}' returned next step '{step_lead}'.")
-                
-        logger.debug("Agent run completed.")
 
+        logger.debug("Agent run completed.")
+        
+    @overload
+    def run(self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
+        """Sync version of run."""
+        return asyncio.run(self._run_internal(context, entry_point))
+
+    @overload
+    @deprecated("run(context, entry_point: str, args=..., kwargs=...) is deprecated and will be removed in a future release. Use run(..., StepPass(...)) or arun(...) instead.")
+    def run(self,context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str] = None,  args:Tuple=(), kwargs:Dict[str,Any] = {}):
+        self.run(context=context, entry_point=StepPass(step=entry_point, args=args, kwargs=kwargs))
+    
+    def run(
+        self,
+        context: Optional[str | Context[MessageT]] = None,
+        entry_point: Optional[str | StepPass | str] = None,
+        args: Tuple = (),
+        kwargs: Dict[str, Any] = {},
+    ):
+        # Handle deprecated signature
+        if isinstance(entry_point, str):
+            warnings.warn(
+                "run(context, entry_point: str, args=..., kwargs=...) is deprecated and will be removed in a future release. Use run(..., StepPass(...)) or arun(...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            entry_point = StepPass(step=entry_point, args=args, kwargs=kwargs)
+
+        # Normal implementation
+        return asyncio.run(self._run_internal(context, entry_point))
+    
+    
+    async def arun(self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
+        """Async version of run."""
+        return await self._run_internal(context, entry_point)
+    
     def serialize_state(self) -> dict:
         cx = self.context_manager.model_dump() if self.context_manager else {}
         return cx

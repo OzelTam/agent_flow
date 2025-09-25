@@ -1,12 +1,10 @@
-import pytest
-import json
-from agentflowpy.agent import Agent, StepPass, AGENT_START, AGENT_END, _resrore_cx_msg_types
+import pytest, json, asyncio
+from agentflowpy.agent import Agent, StepPass, AGENT_START, AGENT_END
 from agentflowpy.context import Context
 from agentflowpy.context_manager import ContextManager
-import asyncio
 
 
-def test_with_async():
+def test_run_with_async_step():
     agent = Agent[str]()
     ctx = Context[str]()
     agent.context_manager.switch_context(ctx)
@@ -16,9 +14,20 @@ def test_with_async():
         
     agent.register_step(mock_start, AGENT_START)
     agent.run()
-    
     assert agent.context_manager.current_context.messages == ["Hi"]
         
+
+async def test_arun_with_async_step():
+    agent = Agent[str]()
+    ctx = Context[str]()
+    agent.context_manager.switch_context(ctx)
+    async def mock_start(cx:Context[str]):
+        await asyncio.sleep(2)
+        ctx.append("Hi")
+        
+    agent.register_step(mock_start, AGENT_START)
+    await agent.arun()
+    assert agent.context_manager.current_context.messages == ["Hi"]
 
 def test_agent_initializes_context_manager():
     agent = Agent[str]()
