@@ -1,25 +1,24 @@
-from agentflowpy import Agent, Context, ContextManager, StepPass, AGENT_START, AGENT_END
+from agentflowpy import SimpleAgent, Context, StepLead, AGENT_START, AGENT_END
 
-ctx = Context[str](id="ctx1")
-agent = Agent[str]()
-agent.context_manager.switch_context(ctx)
+agent = SimpleAgent[str]()
+agent.add_context(Context[str](id="ctx1"))
 
 def ask_name(context: Context[str]):
     name = input("What is your name? ")
-    context.append(f"user_name: {name}")
-    # Use StepPass to pass name to next ("greet") step 
-    return StepPass(step="greet", kwargs={"name": name})
+    context.messages.append(f"user_name: {name}")
+    # Use StepLead to pass name to next ("greet") step 
+    return StepLead(step="greet", kwargs={"name": name})
     # or use positional args like:
-    return StepPass(step="greet", args=(name,))
+    return StepLead(step="greet", args=(name,))
 
 def greet(context: Context[str], name: str):
     greeting = f"Hello, {name}!"
-    context.append(greeting)
+    context.messages.append(greeting)
     return AGENT_END
 
-agent.register_step(ask_name, tag=AGENT_START) # Starting step
-agent.register_step(greet, tag="greet")
+agent.register(ask_name, tag=AGENT_START) # Starting step
+agent.register(greet, tag="greet")
 
-agent.run()
+agent.run("ctx1")
 
-print("Conversation messages:", agent.context_manager.current_context.messages)
+print("Conversation messages:", agent.contexts["ctx1"].messages)

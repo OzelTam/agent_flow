@@ -1,23 +1,17 @@
-from agentflowpy import Context, Agent,  StepPass, AGENT_END, AGENT_START
+from agentflowpy import Context, SimpleAgent,  StepLead, AGENT_END, AGENT_START
 
 
-agent = Agent[str]()
+agent = SimpleAgent[str]()
  
 # add contexes 
-agent.context_manager.contexts["cx1"] = Context[str]()
-agent.context_manager.contexts["cx2"] = Context[str]() 
-
-# set current context to "cx1"
-agent.context_manager.switch_context("cx1")
-
+agent.add_context("cx1",Context[str]())
+agent.add_context("cx2",Context[str]())
 
 def create_message(cx:Context[str]):
-    message = "this is a message for 'cx1'"
-    cx.messages.append(message) # Appends message to cx1
-    agent.context_manager.switch_context("cx2") # Switch current_context to "cx2"
-    return StepPass("append_message",
+    cx.messages.append("this is a message for 'cx1'") # Appends message to cx1
+    return StepLead("append_message",
                     kwargs={"context_before":cx}, # Passes cx which is "cx1"  
-                    refresh_context=True) # If refresh_context is false it will contiue passing "cx1" to first positional argument of next step
+                    modify_flow_context="cx2") # If refresh_context is false it will contiue passing "cx1" to first positional argument of next step
 
 def append_message(cx:Context[str], context_before:Context[str]):
     last_msg_of_cx1 = context_before.messages[-1] # Get last message of context_before which passed down as kwarg
@@ -25,10 +19,10 @@ def append_message(cx:Context[str], context_before:Context[str]):
     return AGENT_END
 
 
-agent.register_step(create_message, AGENT_START)
-agent.register_step(append_message, "append_message")
-agent.run()
+agent.register(create_message, AGENT_START)
+agent.register(append_message, "append_message")
+agent.run("cx1")
 
-for id, cx in agent.context_manager.contexts.items():
+for id, cx in agent.contexts.items():
     print(f"# MESSAGES OF '{id}'")
     print(f"{"\n".join([f"> {m}" for m in cx.messages])}\n")

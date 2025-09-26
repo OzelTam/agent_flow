@@ -1,218 +1,232 @@
-import logging, inspect, asyncio
-from typing import Generic, TypeVar, Type, Callable, Dict, ParamSpec, Concatenate, Optional, Tuple, Any , overload
-from pydantic import BaseModel, Field, PrivateAttr
-from .context import Context
-from .context_manager import ContextManager, ContextDict
+from collections.abc import MutableMapping
+from typing import Generic, TypeVar, List, Optional, Any, Tuple, Dict, Callable, Concatenate, ParamSpec, Type, Generator, overload
 from dataclasses import dataclass, field
-from typing_extensions import deprecated
-import warnings
+from .context import Context
+import inspect, logging, asyncio
 
 
-logger = logging.getLogger(__name__)
-MessageT = TypeVar("MessageT")
-AGENT_START = "agent_start"
-AGENT_END = "agent_end"
+AGENT_START = "<AGENT_START>"
+AGENT_END = "<AGENT_END>"
 
+MessageType = TypeVar('MessageType', bound=Any)
+ContextType = TypeVar('ContextType', bound=Context[Any])
 P = ParamSpec('P')
 
+logger = logging.getLogger(__name__)
+
 @dataclass
-class StepPass():
+class StepLead:
     step:str
+    args:Tuple = field(default_factory=tuple)
     kwargs:dict = field(default_factory=dict)
-    args:tuple = field(default_factory=tuple)
-    refresh_context:bool = field(default=False)
+    modify_flow_context: Optional[ContextType | str] = field(default=None)
 
-class Agent(BaseModel, Generic[MessageT]):
-    context_manager: ContextManager[MessageT] | None = Field(default=None)
-    __registered_steps: Dict[str,Callable[Concatenate[Context[MessageT], P], Optional[str | StepPass]]] = PrivateAttr(default_factory=dict)
 
+
+class ContextDict(MutableMapping):
+    def __init__(self):
+        self._store = {}
+
+    # block normal assignment
+    def __setitem__(self, key, value):
+        raise RuntimeError(
+            "Direct assignment with ContextDict()[key] = value is not allowed. "
+            "Use `.insert(key, value)` instead."
+        )
+
+    # special method to allow controlled insertion
+    def insert(self, key, value):
+        if not isinstance(value, Context):
+            raise ValueError("Passed value must be an instance of Context class/subclass.")
+        key = key if key else value.id
+        value.id = key
+        
+        self._store[key] = value
+
+    def __getitem__(self, key):
+        return self._store[key]
+
+    def __delitem__(self, key):
+        del self._store[key]
+
+    def __iter__(self):
+        return iter(self._store)
+
+    def __len__(self):
+        return len(self._store)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self._store})"
+
+
+class Agent(Generic[MessageType, ContextType]):
     
-    def model_post_init(self, __context):
-        if self.context_manager is None:
-            object.__setattr__(self, "context_manager", ContextManager())
-            logger.debug("Initialized new ContextManager for Agent.")
-
-    def register_step(self, func: Callable[Concatenate[Context[MessageT], P], Optional[str | StepPass]], tag: str = None):
-        if tag is None:
-            tag = func.__name__
-        if tag in self.__registered_steps:
-            logger.exception(f"Attempted to register duplicate step '{tag}'.")
-            raise ValueError(f"Step with '{tag}' tag already exists.")
-        self.__registered_steps[tag] = func
-        logger.debug(f"Registered step '{tag}'.")
-
+    def __init__(self):
+        # Automatically default ContextType to Context[MessageType]
+        self.contexts: Dict[str, Context[MessageType]] = ContextDict()  # type: ignore
+        self.registered_functions: Dict[str,Callable] = {}
+        
+        
+    def add_contexts(self, contexts:List[ContextType]):
+        if not isinstance(contexts, List):
+            raise ValueError("You must give List of Contex class/subclass to contexts param.")
+        for c in contexts:
+            self.add_context(c)
+    
+    def remove_context(self, context:str | ContextType):
+        id = context if isinstance(context, str) else context.id
+        del self.contexts[id]
+    
+    def clear_contexts(self):
+        self.contexts = ContextDict()
+        
+    @overload
+    def add_context(self, context: ContextType):...
+        
+    @overload
+    def add_context(self,key:str, context: ContextType):...
+    
+    def add_context(self, *args, **kwargs) -> None:
+        # Handle positional arguments
+        if len(args) == 1 and not kwargs:
+            context: ContextType = args[0]
+            self.contexts.insert(context.id, context)
+            logging.debug(f"Context added {context.id}.")
+        elif len(args) == 2 and not kwargs:
+            key, context = args
+            self.contexts.insert(key, context)
+            logging.debug(f"Context added {key}.")
+        # Handle keyword arguments
+        elif "context" in kwargs and "key" not in kwargs and not args:
+            context: ContextType = kwargs["context"]
+            self.contexts.insert(context.id, context)
+            logging.debug(f"Context added {context.id}.")
+        elif "context" in kwargs and "key" in kwargs and not args:
+            key: str = kwargs["key"]
+            context: ContextType = kwargs["context"]
+            self.contexts.insert(key, context)
+            logging.debug(f"Context added {key}.")
+        else:
+            raise TypeError(
+                "add_context expects (context), (key, context), "
+                "or keyword arguments context=..., [key=...]"
+            )
+    
+    def get_context(self, key:str)->ContextType:
+        return self.contexts[key]
+    
+    def register(self, func: Callable[Concatenate[ContextType, P], Optional[str | StepLead]], tag: Optional[str] = None):
+        tag = tag if tag else func.__name__
+        self.registered_functions[tag] = func
+        logging.debug(f"Registered function {func.__name__}:{tag}")
+        
     async def _execute_step( self, step_func: Callable, context, *args, **kwargs):
         """Run a step function (sync or async) and return its result."""
         if inspect.iscoroutinefunction(step_func):
             return await step_func(context, *args, **kwargs)
         else:
             return step_func(context, *args, **kwargs)
-
-    async def _run_internal( self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
+        
+    async def _run_internal( self, context: str | ContextType, entry_point: Optional[str | StepLead] = None):
         """
         Shared logic for running steps (always async).
         Sync wrapper can call this with asyncio.run().
         """
 
-        if not context and self.context_manager is None:
-            logger.exception("ContextManager is not set. Cannot run agent.")
-            raise ValueError("ContextManager is not set.")
-
-        if not context and self.context_manager.current_context is None:
-            logger.exception("Current context is not set in ContextManager. Cannot run agent.")
-            raise ValueError("Current context is not set in ContextManager.")
-
-        if len(self.__registered_steps.items()) == 0:
+        if len(self.registered_functions) == 0:
             logger.warning("No steps registered. Exiting run().")
             return
 
-        step_lead: str | StepPass
+        step_lead: str | StepLead
 
         if entry_point:
-            step_lead = entry_point if isinstance(entry_point, StepPass) else StepPass(entry_point)
+            step_lead = entry_point if isinstance(entry_point, StepLead) else StepLead(entry_point)
         else:
-            step_lead = AGENT_START if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.keys()))
+            step_lead = AGENT_START if AGENT_START in self.registered_functions else next(iter(self.registered_functions.keys()))
 
         logger.debug(f"Starting agent run at step '{step_lead}'.")
-        context = self.context_manager.contexts[self.context_manager.current_context.id] if not context else context
-        context = self.context_manager.contexts[context] if isinstance(context, str) else context
-
+        cx = self.contexts[context] if isinstance(context, str) else self.contexts[context.id] if isinstance(context, Context) else None
+        context = cx if cx else context
+        
+        if not cx:
+            logger.exception(f"Context is not found: {context}")
+            raise Exception(f"Context is not found: {context}")
+        
         while step_lead != AGENT_END and step_lead is not None:
             step_func: Callable
             args = ()
             kwargs = {}
 
-            if isinstance(step_lead, StepPass):
+            if isinstance(step_lead, StepLead):
                 step_name = step_lead.step
-                if step_name not in self.__registered_steps and step_name != AGENT_START:
+                if step_name not in self.registered_functions and step_name != AGENT_START:
                     logger.exception(f"Step '{step_name}' not registered. Stopping execution.")
                     raise ValueError(f"Step '{step_name}' is not registered.")
-                if step_lead.refresh_context:
-                    context = self.context_manager.contexts[self.context_manager.current_context.id]
-                    logger.debug(f"Context updated to id={context.id} due to StepPass.")
+                if step_lead.modify_flow_context:
+                    context = self.contexts[step_lead.modify_flow_context] if isinstance(step_lead.modify_flow_context, str) else self.contexts[step_lead.modify_flow_context.id] if issubclass(step_lead.modify_flow_context, Context) else None
+                    if not context:
+                        logger.exception(f"Context is not found: {context}")
+                        raise Exception(f"Context is not found: {context}")
+                    logger.debug(f"Context updated to id={context.id} due to StepLead.")
                 if not isinstance(step_lead.kwargs, dict):
-                    raise TypeError("StepPass kwargs must be a dictionary.")
+                    raise TypeError("StepLead kwargs must be a dictionary.")
                 if not isinstance(step_lead.args, tuple):
-                    raise TypeError("StepPass args must be a tuple.")
+                    raise TypeError("StepLead args must be a tuple.")
 
                 kwargs = step_lead.kwargs
                 args = step_lead.args
 
                 if step_name == AGENT_START:
-                    step_func = self.__registered_steps[AGENT_START] if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.values()))
+                    step_func = self.registered_functions[AGENT_START] if AGENT_START in self.registered_functions else next(iter(self.registered_functions.values()))
                 else:
-                    step_func = self.__registered_steps[step_lead.step]
-                logger.debug(f"Executing step '{step_lead.step}':'{step_func.__name__}' with StepPass.")
+                    step_func = self.registered_functions[step_lead.step]
+                logger.debug(f"Executing step '{step_lead.step}':'{step_func.__name__}' with StepLead.")
             elif isinstance(step_lead, str):
-                if step_lead not in self.__registered_steps and step_lead != AGENT_START:
+                if step_lead not in self.registered_functions and step_lead != AGENT_START:
                     raise ValueError(f"Step '{step_lead}' is not registered.")
                 if step_lead == AGENT_START:
-                    step_func = self.__registered_steps[AGENT_START] if AGENT_START in self.__registered_steps else next(iter(self.__registered_steps.values()))
+                    step_func = self.registered_functions[AGENT_START] if AGENT_START in self.registered_functions else next(iter(self.registered_functions.values()))
                 else:
-                    step_func = self.__registered_steps[step_lead]
+                    step_func = self.registered_functions[step_lead]
                 logger.debug(f"Executing step '{step_lead}':'{step_func.__name__}'.")
             else:
-                raise TypeError(f"Step lead must be str or StepPass, got {type(step_lead)}.")
+                raise TypeError(f"Step lead must be str or StepLead, got {type(step_lead)}.")
 
             step_lead = await self._execute_step(step_func, context, *args, **kwargs)
 
             if step_lead is None:
                 logger.debug("Step returned None. Ending run.")
-            elif isinstance(step_lead, StepPass):
-                logger.debug(f"Step '{step_func.__name__}' returned StepPass to '{step_lead.step}'.")         
+            elif isinstance(step_lead, StepLead):
+                logger.debug(f"Step '{step_func.__name__}' returned StepLead to '{step_lead.step}'.")         
             elif isinstance(step_lead, str):
                 logger.debug(f"Step '{step_func.__name__}' returned next step '{step_lead}'.")
 
         logger.debug("Agent run completed.")
-        
-    @overload
-    def run(self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
-        """Sync version of run."""
-        return asyncio.run(self._run_internal(context, entry_point))
-
-    @overload
-    @deprecated("run(context, entry_point: str, args=..., kwargs=...) is deprecated and will be removed in a future release. Use run(..., StepPass(...)) or arun(...) instead.")
-    def run(self,context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str] = None,  args:Tuple=(), kwargs:Dict[str,Any] = {}):
-        self.run(context=context, entry_point=StepPass(step=entry_point, args=args, kwargs=kwargs))
     
-    def run(
-        self,
-        context: Optional[str | Context[MessageT]] = None,
-        entry_point: Optional[str | StepPass | str] = None,
-        args: Tuple = (),
-        kwargs: Dict[str, Any] = {},
-    ):
-        # Handle deprecated signature
-        if isinstance(entry_point, str):
-            warnings.warn(
-                "run(context, entry_point: str, args=..., kwargs=...) is deprecated and will be removed in a future release. Use run(..., StepPass(...)) or arun(...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            entry_point = StepPass(step=entry_point, args=args, kwargs=kwargs)
-
-        # Normal implementation
-        return asyncio.run(self._run_internal(context, entry_point))
+    def run(self, context: str | ContextType, entry_point: Optional[str | StepLead] = None):
+            """Sync version of run."""
+            return asyncio.run(self._run_internal(context, entry_point))
     
-    
-    async def arun(self, context: Optional[str | Context[MessageT]] = None, entry_point: Optional[str | StepPass] = None):
+    async def arun(self, context: str | ContextType, entry_point: Optional[str | StepLead] = None):
         """Async version of run."""
         return await self._run_internal(context, entry_point)
     
-    def serialize_state(self) -> dict:
-        cx = self.context_manager.model_dump() if self.context_manager else {}
-        return cx
-    
-    def serialize_state_json(self, indent: int = 2) -> str:
-        cx_json = self.context_manager.model_dump_json(indent=indent) if self.context_manager else "{}"
-        return cx_json
-    
-    def restore_state(self, data: dict, message_type: Type[MessageT]) -> None:
-        current_context_id = data.get("current_context_id", None)
-        contexts_dict_data = data.get("contexts", {})
-
-        object.__setattr__(self, "context_manager", ContextManager())
-        logger.debug("Initialized new ContextManager for Agent during restore_state.")
-        contexts_dict = ContextDict()
-        for cx_id, cx_data in contexts_dict_data.items():
-            cx = _resrore_cx_msg_types(cx_data, message_type)
-            contexts_dict[cx_id] = cx
-        self.context_manager.contexts = contexts_dict
-        self.context_manager.switch_context(current_context_id)
+    def contexts_to_dicts(self)->List[Dict]:
+        contexts = []
+        for c in self.contexts.values():
+            contexts.append(c.to_dict())
+        return contexts
         
-        
-    def restore_state_json(self, json_str: str, message_type: Type[MessageT]) -> None:
-        import json
-        data = json.loads(json_str)
-        if not isinstance(data, dict):
-            logger.exception("JSON string does not represent a dictionary. Cannot restore state.")
-            raise ValueError("JSON string does not represent a dictionary.")
-        self.restore_state(data, message_type)
+    @classmethod
+    def contexts_from_dicts(cls, cx_dicts: List[dict],
+                         msg_type: Optional[Type[MessageType]] = None, 
+                         cx_type: Optional[Type[ContextType]] = None)->List[ContextType]:
+        msg_type = msg_type if msg_type else dict
+        cx_type = cx_type if cx_type else Context[Any]
+        res:List[ContextType] = []
+        for dct in cx_dicts:
+             res.append(cx_type.from_dict(dct, msg_type))
+        return res
 
-def _resrore_cx_msg_types(data:dict, msg_type:Type[MessageT]) -> Context[MessageT]:
-    context = Context.model_validate(data)
-    msgs_updated = []
-    for msg in context.messages:
-        if not msg or not isinstance(msg, (msg_type, dict)):
-            logger.warning(f"Message in context id={context.id} is neither of type {msg_type} nor dict. Skipping.")
-            continue
-        if isinstance(msg, msg_type):
-            msgs_updated.append(msg)
-        elif issubclass(msg_type, BaseModel):
-            try:
-                msg_obj = msg_type.model_validate(msg)
-                msgs_updated.append(msg_obj)
-            except Exception as e:
-                logger.error(f"Failed to validate message dict to {msg_type}: {e}. Skipping message.")
-                continue
-        else:
-            try:
-                msg_obj = msg_type(**msg)  # type: ignore
-                msgs_updated.append(msg_obj)
-            except Exception as e:
-                logger.error(f"Failed to instantiate {msg_type} from dict: {e}. Skipping message.")
-                continue
-                
-    context.clear()
-    context.extend(msgs_updated)
-    return context
+class SimpleAgent(Agent[MessageType, Context[MessageType]]):
+    pass

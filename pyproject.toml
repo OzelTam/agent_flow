@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentflowpy"
-version = "0.2.2"
+version = "1.0.0"
 description = "Practial module to build AI agents with context management and step-based execution."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,12 +13,13 @@ authors = [
   { name = "Ozel Umut Tam", email = "ozel.umut.tam@gmail.com" }
 ]
 dependencies = [
-  "pydantic>=2.11.0"
+  "pydantic>=2.11.0",
+  "typing-extensions>=4.0.0"
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=7.0.0",
+  "pytest>=8.0.0",
   "pytest-asyncio>=1.0.0"
   # "isort>=6.0",
   # "flake8>=6.0"
